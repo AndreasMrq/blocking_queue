@@ -7,90 +7,58 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
+#include <functional> 
 
-class ConstructionTest{
+class ConstructorCounter{
   public:
-    struct Calls
+    struct Counter
     {
-    unsigned int destructorCalls = 0;
-    unsigned int copyConstructorCalls = 0;
-    unsigned int copyAssignmentCalls = 0;
-    unsigned int moveConstructorCalls = 0;
-    unsigned int moveAssignmentCalls = 0;
+      unsigned int copyConstructorCalls = 0;
+      unsigned int copyAssignmentCalls = 0;
+      unsigned int moveConstructorCalls = 0;
+      unsigned int moveAssignmentCalls = 0;
     };
 
-    Calls m_counter;
+    Counter m_counter;
 
-    ConstructionTest(Calls calls)
+    ConstructorCounter() = default;
+
+    ConstructorCounter(Counter counter) : m_counter{counter}
     {
-      m_counter = calls;
     }
-  ~ConstructionTest() // I. destructor
-  {
-    ++m_counter.destructorCalls;
-  }
 
-  ConstructionTest(const ConstructionTest& other) // II. copy constructor
-                                                  : ConstructionTest(other.m_counter)
-  {
-    ++m_counter.copyConstructorCalls;
-  }
+    ConstructorCounter(const ConstructorCounter& other) // II. copy constructor
+      : ConstructorCounter(other.m_counter)
+    {
+      ++m_counter.copyConstructorCalls;
+    }
 
-  ConstructionTest& operator=(const ConstructionTest& other) // III. copy assignment
-  {
-    if (this == &other)
+    ConstructorCounter& operator=(const ConstructorCounter& other) // III. copy assignment
+    {
+      if (this == &other)
+        return *this;
+
+      ConstructorCounter temp(other.m_counter); // use the copy constructor
+      std::swap(m_counter, temp.m_counter); // exchange the underlying resource
+      ++m_counter.copyAssignmentCalls;
+
       return *this;
-
-    ConstructionTest temp(other.m_counter); // use the copy constructor
-    std::swap(m_counter, temp.m_counter); // exchange the underlying resource
-    ++m_counter.copyAssignmentCalls;
-
-    return *this;
-  }
-
-  ConstructionTest(ConstructionTest&& other) noexcept // IV. move constructor
-    : cstring(std::exchange(other.cstring, nullptr))
-    {
     }
 
-  ConstructionTest& operator=(ConstructionTest&& other) noexcept // V. move assignment
-  {
-    ConstructionTest temp(std::move(other));
-    std::swap(cstring, temp.cstring);
-    return *this;
-  } ~ConstructionTest() // I. destructor
-  {
-    delete[] cstring; // deallocate
-  }
+    ConstructorCounter(ConstructorCounter&& other) noexcept // IV. move constructor
+      : m_counter(std::exchange(other.m_counter, Counter{}))
+      {
+        ++m_counter.moveConstructorCalls;
+      }
 
-  ConstructionTest(const ConstructionTest& other) // II. copy constructor
-    : ConstructionTest(other.cstring)
-  {
-  }
-
-  ConstructionTest& operator=(const ConstructionTest& other) // III. copy assignment
-  {
-    if (this == &other)
+    ConstructorCounter& operator=(ConstructorCounter&& other) noexcept // V. move assignment
+    {
+      ConstructorCounter temp(std::move(other));
+      std::swap(m_counter, temp.m_counter);
+      ++m_counter.moveAssignmentCalls;
       return *this;
-
-    ConstructionTest temp(other); // use the copy constructor
-    std::swap(cstring, temp.cstring); // exchange the underlying resource
-
-    return *this;
-  }
-
-  ConstructionTest(ConstructionTest&& other) noexcept // IV. move constructor
-    : cstring(std::exchange(other.cstring, nullptr))
-    {
     }
-
-  ConstructionTest& operator=(ConstructionTest&& other) noexcept // V. move assignment
-  {
-    ConstructionTest temp(std::move(other));
-    std::swap(cstring, temp.cstring);
-    return *this;
-  }
-}
+};
 
 using namespace std::literals::chrono_literals;
 
@@ -147,7 +115,23 @@ TEST(BlockingQueueTests, GivenElementAlreadyInQueue_WhenWaitAndTryPop_DoesNotWai
   ASSERT_EQ(*result,1);
 }
 
-template<typename T>
+TEST(BlockingQueueEfficiencyTests, GivenPushRValue_WhenBlockAndPop_NoCopyOperationsUsed)
+{
+  BlockingQueue<ConstructorCounter> bq;
+  ASSERT_TRUE(bq.IsEmpty());
+
+  ConstructorCounter counter;
+  bq.Push(std::move(counter));
+
+  ConstructorCounter result{bq.BlockAndPop()};
+
+  ASSERT_EQ(result.m_counter.copyAssignmentCalls, 0);
+  ASSERT_EQ(result.m_counter.moveAssignmentCalls, 0);
+  ASSERT_EQ(result.m_counter.copyConstructorCalls, 0);
+  ASSERT_EQ(result.m_counter.moveConstructorCalls, 2);
+}
+
+  template<typename T>
 void Consume(BlockingQueue<T> &queue, std::promise<std::vector<T>> &&resultPromise, std::size_t dataSize)
 {
   std::vector<T> result{};
@@ -159,7 +143,22 @@ void Consume(BlockingQueue<T> &queue, std::promise<std::vector<T>> &&resultPromi
   resultPromise.set_value(result);
 }
 
-template<typename T>
+  template<typename T>
+void ConsumeBlocking(std::stop_token stopToken, BlockingQueue<T> &queue, std::promise<std::vector<T>> &&resultPromise)
+{
+  std::vector<T> result{};
+  while(!stopToken.stop_requested())
+  {
+    auto item = queue.BlockAndPop(stopToken);
+    if(item.has_value())
+    {
+      result.emplace_back(*item);
+    }
+  }
+  resultPromise.set_value(result);
+}
+
+  template<typename T>
 void Produce(BlockingQueue<T> &queue, std::vector<T> testData)
 {
   for(const auto &item: testData)
@@ -175,17 +174,10 @@ TEST(BlockingQueueTests, GivenProducerAndConsumer_WhenBlockAndPop_CorrectItemsTa
   BlockingQueue<int> queue;
   std::vector<int> expectedData{1,2,3,4,5,6,7,8,9,10};
 
-  auto th1 = std::thread(&Consume<int>, std::ref(queue), std::move(dataPromise), 10);
-  auto th2 = std::thread(&Produce<int>, std::ref(queue), expectedData);
+  auto th1 = std::jthread(&Consume<int>, std::ref(queue), std::move(dataPromise), 10);
+  auto th2 = std::jthread(&Produce<int>, std::ref(queue), expectedData);
 
   auto consumerResult = fut.get();
-  std::ostringstream stream;
-  for(auto item: consumerResult)
-  {
-    stream << item << std::endl;
-  }
-  th1.join();
-  th2.join();
 
   ASSERT_THAT(expectedData, ::testing::ContainerEq(consumerResult));
 }
@@ -197,19 +189,31 @@ TEST(BlockingQueueTests, GivenMultipleProducerAndSingleConsumer_WhenBlockAndPop_
   BlockingQueue<int> queue;
   std::vector<int> expectedData{1,2,3,4,5,6,7,8,9,10};
 
-  auto th1 = std::thread(&Consume<int>, std::ref(queue), std::move(dataPromise), 10);
-  auto th2 = std::thread(&Produce<int>, std::ref(queue), std::vector<int>{1,2,3});
-  auto th3 = std::thread(&Produce<int>, std::ref(queue), std::vector<int>{4,5,6});
-  auto th4 = std::thread(&Produce<int>, std::ref(queue), std::vector<int>{7,8});
-  auto th5 = std::thread(&Produce<int>, std::ref(queue), std::vector<int>{9,10});
+  auto th1 = std::jthread(&Consume<int>, std::ref(queue), std::move(dataPromise), 10);
+  auto th2 = std::jthread(&Produce<int>, std::ref(queue), std::vector<int>{1,2,3});
+  auto th3 = std::jthread(&Produce<int>, std::ref(queue), std::vector<int>{4,5,6});
+  auto th4 = std::jthread(&Produce<int>, std::ref(queue), std::vector<int>{7,8});
+  auto th5 = std::jthread(&Produce<int>, std::ref(queue), std::vector<int>{9,10});
 
   auto consumerResult = fut.get();
   std::sort(std::begin(consumerResult), std::end(consumerResult));
-  th1.join();
-  th2.join();
-  th3.join();
-  th4.join();
-  th5.join();
 
   ASSERT_THAT(expectedData, ::testing::ContainerEq(consumerResult)) << "hello"; 
+}
+
+TEST(BlockingQueueThreadingTests, GivenBlockingConsumer_WhenStopRequested_ThenStops)
+{
+  std::promise<std::vector<int>> dataPromise;
+  auto fut = dataPromise.get_future();
+  BlockingQueue<int> queue;
+  std::vector<int> expectedData{1,2,3,4,5,6,7,8,9,10};
+
+  auto th1 = std::jthread([&queue, promise = std::move(dataPromise)](std::stop_token token) mutable {ConsumeBlocking<int>(token, queue, std::move(promise));});
+  auto th2 = std::jthread(&Produce<int>, std::ref(queue), expectedData);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  th1.request_stop();
+
+  auto consumerResult = fut.get();
+  ASSERT_THAT(expectedData, ::testing::ContainerEq(consumerResult));
 }
