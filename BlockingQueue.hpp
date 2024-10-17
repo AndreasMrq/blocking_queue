@@ -3,16 +3,36 @@
 #include <mutex>
 #include <condition_variable>
 #include <optional>
+#include <concepts>
 
-template<typename T>
+template<std::move_constructible T>
 class BlockingQueue
 {
 public:
-    void Push(const T & item)
+    void Push(const T &item)
     {
         {
             std::lock_guard<std::mutex> lock(guard);
             queue.push(item);
+        }
+        signal.notify_one();
+    }
+
+    void Push(T&& item)
+    {
+        {
+            std::lock_guard<std::mutex> lock(guard);
+            queue.push(item);
+        }
+        signal.notify_one();
+    }
+
+    template<typename ...Args>
+    void Emplace(Args... args)
+    {
+        {
+            std::lock_guard<std::mutex> lock(guard);
+            queue.emplace(args...);
         }
         signal.notify_one();
     }
@@ -35,7 +55,7 @@ public:
 
         signal.wait(lock, [&](){return !queue.empty();});
 
-        const auto result = queue.front();
+        T result{std::move(queue.front())};
         queue.pop();
         return result;
     }
@@ -55,7 +75,7 @@ private:
     std::optional<T> TryPopInternal();
 };
 
-template<typename T>
+template<std::move_constructible T>
 std::optional<T> BlockingQueue<T>::TryPopInternal()
 {
     if(queue.empty())
@@ -64,7 +84,7 @@ std::optional<T> BlockingQueue<T>::TryPopInternal()
     }
     else
     {
-        const auto result = std::make_optional<T>(queue.front());
+        const auto result = std::make_optional<T>(std::move(queue.front()));
         queue.pop();
         return result;
     }
