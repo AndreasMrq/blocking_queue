@@ -115,6 +115,51 @@ TEST(BlockingQueueTests, GivenElementAlreadyInQueue_WhenWaitAndTryPop_DoesNotWai
   ASSERT_EQ(*result,1);
 }
 
+TEST(BlockingQueueEfficiencyTests, GivenEmplace_WhenBlockAndPop_NoCopyOperationsUsed)
+{
+  BlockingQueue<ConstructorCounter> bq;
+  ASSERT_TRUE(bq.IsEmpty());
+
+  bq.Emplace();
+
+  ConstructorCounter result{bq.BlockAndPop()};
+
+  ASSERT_EQ(result.m_counter.copyAssignmentCalls, 0);
+  ASSERT_EQ(result.m_counter.moveAssignmentCalls, 0);
+  ASSERT_EQ(result.m_counter.copyConstructorCalls, 0);
+  ASSERT_EQ(result.m_counter.moveConstructorCalls, 1);
+}
+
+TEST(BlockingQueueEfficiencyTests, GivenEmplace_WhenTryPop_NoCopyOperationsUsed)
+{
+  BlockingQueue<ConstructorCounter> bq;
+  ASSERT_TRUE(bq.IsEmpty());
+
+  bq.Emplace();
+
+  auto result{bq.TryPop()};
+
+  ASSERT_EQ(result->m_counter.copyAssignmentCalls, 0);
+  ASSERT_EQ(result->m_counter.moveAssignmentCalls, 0);
+  ASSERT_EQ(result->m_counter.copyConstructorCalls, 0);
+  ASSERT_EQ(result->m_counter.moveConstructorCalls, 2);
+}
+
+TEST(BlockingQueueEfficiencyTests, GivenEmplace_WhenWaitAndTryPop_NoCopyOperationsUsed)
+{
+  BlockingQueue<ConstructorCounter> bq;
+  ASSERT_TRUE(bq.IsEmpty());
+
+  bq.Emplace();
+
+  auto result{bq.WaitAndTryPop(std::chrono::microseconds(1))};
+
+  ASSERT_EQ(result->m_counter.copyAssignmentCalls, 0);
+  ASSERT_EQ(result->m_counter.moveAssignmentCalls, 0);
+  ASSERT_EQ(result->m_counter.copyConstructorCalls, 0);
+  ASSERT_EQ(result->m_counter.moveConstructorCalls, 2);
+}
+
 TEST(BlockingQueueEfficiencyTests, GivenPushRValue_WhenBlockAndPop_NoCopyOperationsUsed)
 {
   BlockingQueue<ConstructorCounter> bq;
@@ -129,6 +174,58 @@ TEST(BlockingQueueEfficiencyTests, GivenPushRValue_WhenBlockAndPop_NoCopyOperati
   ASSERT_EQ(result.m_counter.moveAssignmentCalls, 0);
   ASSERT_EQ(result.m_counter.copyConstructorCalls, 0);
   ASSERT_EQ(result.m_counter.moveConstructorCalls, 2);
+}
+
+TEST(BlockingQueueEfficiencyTests, GivenPushRValue_WhenBlockAndPopWithToken_NoCopyOperationsUsed)
+{
+  BlockingQueue<ConstructorCounter> bq;
+  ASSERT_TRUE(bq.IsEmpty());
+
+  ConstructorCounter counter;
+  bq.Push(std::move(counter));
+  auto stop_source = std::stop_source{};
+
+  auto resultOpt = bq.BlockAndPop(stop_source.get_token());
+
+  ASSERT_TRUE(resultOpt);
+  ASSERT_EQ(resultOpt->m_counter.copyAssignmentCalls, 0);
+  ASSERT_EQ(resultOpt->m_counter.moveAssignmentCalls, 0);
+  ASSERT_EQ(resultOpt->m_counter.copyConstructorCalls, 0);
+  ASSERT_EQ(resultOpt->m_counter.moveConstructorCalls, 3);
+}
+
+TEST(BlockingQueueEfficiencyTests, GivenPushLValue_WhenBlockAndPop_OneCopyOperationsUsed)
+{
+  BlockingQueue<ConstructorCounter> bq;
+  ASSERT_TRUE(bq.IsEmpty());
+
+  ConstructorCounter counter;
+  bq.Push(counter);
+
+  ConstructorCounter result{bq.BlockAndPop()};
+
+  ASSERT_EQ(result.m_counter.copyAssignmentCalls, 0);
+  ASSERT_EQ(result.m_counter.moveAssignmentCalls, 0);
+  ASSERT_EQ(result.m_counter.copyConstructorCalls, 1);
+  ASSERT_EQ(result.m_counter.moveConstructorCalls, 1);
+}
+
+TEST(BlockingQueueEfficiencyTests, GivenPushLValue_WhenBlockAndPopWithToken_OneCopyOperationsUsed)
+{
+  BlockingQueue<ConstructorCounter> bq;
+  ASSERT_TRUE(bq.IsEmpty());
+
+  ConstructorCounter counter;
+  bq.Push(counter);
+  auto stop_source = std::stop_source{};
+
+  auto resultOpt = bq.BlockAndPop(stop_source.get_token());
+
+  ASSERT_TRUE(resultOpt);
+  ASSERT_EQ(resultOpt->m_counter.copyAssignmentCalls, 0);
+  ASSERT_EQ(resultOpt->m_counter.moveAssignmentCalls, 0);
+  ASSERT_EQ(resultOpt->m_counter.copyConstructorCalls, 1);
+  ASSERT_EQ(resultOpt->m_counter.moveConstructorCalls, 2);
 }
 
   template<typename T>

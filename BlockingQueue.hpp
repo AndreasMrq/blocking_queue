@@ -42,7 +42,7 @@ std::optional<T> BlockingQueue<T>::TryPopInternal()
     }
     else
     {
-        const auto result = std::make_optional<T>(std::move(queue.front()));
+        auto result = std::make_optional<T>(std::move(queue.front()));
         queue.pop();
         return result;
     }
